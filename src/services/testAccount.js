@@ -9,7 +9,10 @@ const MAX_PASSWORD_LENGTH = 64;
 const BCRYPT_ROUNDS = 12;
 
 function normalizePhone(value) {
-  return String(value || '').replace(/\D/g, '');
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length === 13 && digits.startsWith('86')
+    ? digits.slice(2)
+    : digits;
 }
 
 function validateCredentials(phone, password) {
