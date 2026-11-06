@@ -7,6 +7,8 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const SmsCode = require('../models/SmsCode');
 const RefreshToken = require('../models/RefreshToken');
+const GameSave = require('../models/GameSave');
+const authMiddleware = require('../middleware/auth');
 const { sendSms } = require('../services/sms');
 const {
   MAX_PASSWORD_LENGTH,
@@ -297,8 +299,40 @@ router.post('/refresh', async (req, res) => {
   } catch (err) { console.error('refresh error:', err); res.status(500).json({ error: 'Token refresh failed' }); }
 });
 
+// DELETE /api/auth/account
+// Shared test accounts are protected as switch-only accounts. Other users are
+// soft-deleted and their refresh tokens and cloud save are removed.
+router.delete('/account', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findOne({
+      uid: req.user.uid,
+      isDeleted: { $ne: true }
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const accountType = user.accountType || 'standard';
+    if (accountType !== 'standard') {
+      return res.json({
+        success: true,
+        switched: true,
+        accountType
+      });
+    }
+
+    user.isDeleted = true;
+    await user.save();
+    await Promise.all([
+      RefreshToken.deleteMany({ uid: user.uid }),
+      GameSave.deleteOne({ uid: user.uid })
+    ]);
+    res.json({ success: true, deleted: true });
+  } catch (err) {
+    console.error('account deletion error:', err);
+    res.status(500).json({ error: 'Account deletion failed' });
+  }
+});
+
 // GET /api/auth/profile
-const authMiddleware = require('../middleware/auth');
 router.get('/profile', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ uid: req.user.uid });
