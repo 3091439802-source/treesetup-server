@@ -57,7 +57,11 @@ async function startServer() {
   // Connect and start
   await mongoose.connect(mongoUri, { dbName: 'treesetup' });
   console.log('MongoDB connected');
-  await ensureConfiguredAccounts();
+  try {
+    await ensureConfiguredAccounts();
+  } catch (error) {
+    console.error('[ACCOUNT-CONFIG] Shared account import failed:', error.message);
+  }
 
   if (localMongo) {
     const stop = async () => {

@@ -51,6 +51,11 @@ const userSchema = new mongoose.Schema({
     enum: ['qq', 'wechat', 'phone'],
     default: 'phone'
   },
+  accountType: {
+    type: String,
+    enum: ['standard', 'shared_test', 'premium_test'],
+    default: 'standard'
+  },
   paymentAccount: {
     huanYuPurchasedTotal: {
       type: Number,

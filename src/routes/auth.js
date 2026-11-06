@@ -31,10 +31,13 @@ async function createRefreshTokenForUid(uid) {
 function generateSmsCode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
 function formatUserResponse(user, accessToken, refreshToken, isNewUser) {
+  const accountType = user.accountType || 'standard';
   return {
     loginType: user.lastLoginPlatform || 'phone', openId: '', unionId: '',
     phone: user.phone || '', accessToken, refreshToken,
     nickname: user.nickname || '', avatarUrl: user.avatar || '',
+    accountType,
+    isSharedTestAccount: accountType !== 'standard',
     expireTime: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), isNewUser: isNewUser || false
   };
 }
@@ -304,6 +307,8 @@ router.get('/profile', authMiddleware, async (req, res) => {
       uid: user.uid, nickname: user.nickname, avatar: user.avatar,
       phone: user.phone ? user.phone.slice(0, 3) + '****' + user.phone.slice(-4) : '',
       bindings: user.bindings.map(b => ({ platform: b.platform })),
+      accountType: user.accountType || 'standard',
+      isSharedTestAccount: (user.accountType || 'standard') !== 'standard',
       createdAt: user.createdAt, lastLoginAt: user.lastLoginAt
     });
   } catch (err) { console.error('profile error:', err); res.status(500).json({ error: 'Failed to get profile' }); }

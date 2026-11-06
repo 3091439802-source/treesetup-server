@@ -17,15 +17,95 @@ function normalizePhone(value) {
 
 function validateCredentials(phone, password) {
   if (!PHONE_PATTERN.test(phone)) {
-    throw new Error('TEST_ACCOUNT_PHONE must be an 11-digit mainland China mobile number');
+    throw new Error('Shared account phone must be an 11-digit mainland China mobile number');
   }
   if (typeof password !== 'string'
       || password.length < MIN_PASSWORD_LENGTH
       || password.length > MAX_PASSWORD_LENGTH) {
     throw new Error(
-      `TEST_ACCOUNT_PASSWORD must contain ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters`
+      `Shared account password must contain ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters`
     );
   }
+}
+
+function defaultNickname(phone, type) {
+  return type === 'premium'
+    ? `高级测试账号_${phone.slice(-4)}`
+    : `Player_${phone.slice(-4)}`;
+}
+
+function parseSharedTestAccounts(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return [];
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid SHARED_TEST_ACCOUNTS_JSON: ${error.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('Invalid SHARED_TEST_ACCOUNTS_JSON: expected an array');
+  }
+
+  const phones = new Set();
+  return parsed.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Invalid SHARED_TEST_ACCOUNTS_JSON entry ${index + 1}`);
+    }
+    const phone = normalizePhone(item.phone);
+    const password = typeof item.password === 'string' ? item.password : '';
+    const type = item.type === undefined ? 'normal' : item.type;
+    if (type !== 'normal' && type !== 'premium') {
+      throw new Error(
+        `Shared test account type must be normal or premium at entry ${index + 1}`
+      );
+    }
+    validateCredentials(phone, password);
+    if (phones.has(phone)) {
+      throw new Error(`Duplicate shared test account phone: ${phone}`);
+    }
+    phones.add(phone);
+
+    const nickname = typeof item.nickname === 'string'
+      ? item.nickname.trim()
+      : '';
+    return {
+      phone,
+      password,
+      nickname: nickname || defaultNickname(phone, type),
+      type
+    };
+  });
+}
+
+function configuredAccountList(env = process.env) {
+  const accounts = new Map();
+  const legacy = [
+    {
+      phone: normalizePhone(env.TEST_ACCOUNT_PHONE),
+      password: env.TEST_ACCOUNT_PASSWORD || '',
+      type: 'normal'
+    },
+    {
+      phone: normalizePhone(env.PREMIUM_ACCOUNT_PHONE),
+      password: env.PREMIUM_ACCOUNT_PASSWORD || '',
+      type: 'premium'
+    }
+  ];
+
+  for (const account of legacy) {
+    if (!account.phone && !account.password) continue;
+    validateCredentials(account.phone, account.password);
+    accounts.set(account.phone, {
+      ...account,
+      nickname: defaultNickname(account.phone, account.type)
+    });
+  }
+
+  for (const account of parseSharedTestAccounts(env.SHARED_TEST_ACCOUNTS_JSON)) {
+    accounts.set(account.phone, account);
+  }
+  return Array.from(accounts.values());
 }
 
 /**
@@ -55,7 +135,8 @@ async function ensureConfiguredTestAccount() {
       phone,
       nickname: 'Player_' + phone.slice(-4),
       passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
-      lastLoginPlatform: 'phone'
+      lastLoginPlatform: 'phone',
+      accountType: 'shared_test'
     });
     console.log(`[TEST-ACCOUNT] Created shared phone account ${phone}`);
     return user;
@@ -79,7 +160,7 @@ async function ensureConfiguredTestAccount() {
   return user;
 }
 
-function buildPremiumEntries() {
+function buildPremiumEntries(nickname = '高级测试账号') {
   const entries = [
     { key: 'cultivation_stage', type: 'int', value: '31' },
     { key: 'spiritStone', type: 'int', value: '1000000' },
@@ -89,7 +170,7 @@ function buildPremiumEntries() {
     { key: 'totalScore', type: 'int', value: '1000000' },
     { key: 'highscore', type: 'int', value: '1000000' },
     { key: 'store_char_active', type: 'int', value: '0' },
-    { key: 'profile_nickname', type: 'string', value: '高级测试账号' }
+    { key: 'profile_nickname', type: 'string', value: nickname }
   ];
 
   for (let level = 1; level <= 10; level++) {
@@ -119,7 +200,9 @@ function buildPremiumEntries() {
   return entries;
 }
 
-async function upsertConfiguredAccount(phone, password, nickname, entries) {
+async function upsertConfiguredAccount(account) {
+  const { phone, password, nickname, type } = account;
+  const accountType = type === 'premium' ? 'premium_test' : 'shared_test';
   validateCredentials(phone, password);
   let user = await User.findOne({ phone }).select('+passwordHash');
   const passwordMatches = user && user.passwordHash
@@ -134,7 +217,8 @@ async function upsertConfiguredAccount(phone, password, nickname, entries) {
       phone,
       nickname,
       passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
-      lastLoginPlatform: 'phone'
+      lastLoginPlatform: 'phone',
+      accountType
     });
     console.log(`[TEST-ACCOUNT] Created shared phone account ${phone}`);
   } else {
@@ -145,6 +229,10 @@ async function upsertConfiguredAccount(phone, password, nickname, entries) {
     }
     if (user.nickname !== nickname) {
       user.nickname = nickname;
+      changed = true;
+    }
+    if (user.accountType !== accountType) {
+      user.accountType = accountType;
       changed = true;
     }
     if (user.isDeleted) {
@@ -159,7 +247,7 @@ async function upsertConfiguredAccount(phone, password, nickname, entries) {
     }
   }
 
-  if (entries === null) {
+  if (type === 'normal') {
     await GameSave.deleteOne({
       uid: user.uid,
       revision: 0,
@@ -175,7 +263,7 @@ async function upsertConfiguredAccount(phone, password, nickname, entries) {
         uid: user.uid,
         revision: 0,
         schemaVersion: 1,
-        entries,
+        entries: buildPremiumEntries(nickname),
         updatedAt: new Date()
       }
     },
@@ -186,32 +274,15 @@ async function upsertConfiguredAccount(phone, password, nickname, entries) {
 
 async function ensureConfiguredAccounts() {
   if (String(process.env.ENABLE_TEST_ACCOUNTS || '').toLowerCase() !== 'true') {
-    return {
-      testAccount: await ensureConfiguredTestAccount(),
-      premiumAccount: null
-    };
+    return { accounts: [] };
   }
 
-  const testPhone = normalizePhone(process.env.TEST_ACCOUNT_PHONE);
-  const testPassword = process.env.TEST_ACCOUNT_PASSWORD || '';
-  const premiumPhone = normalizePhone(process.env.PREMIUM_ACCOUNT_PHONE);
-  const premiumPassword = process.env.PREMIUM_ACCOUNT_PASSWORD || '';
-  validateCredentials(testPhone, testPassword);
-  validateCredentials(premiumPhone, premiumPassword);
-
-  const testAccount = await upsertConfiguredAccount(
-    testPhone,
-    testPassword,
-    'Player_' + testPhone.slice(-4),
-    null
-  );
-  const premiumAccount = await upsertConfiguredAccount(
-    premiumPhone,
-    premiumPassword,
-    '高级测试账号',
-    buildPremiumEntries()
-  );
-  return { testAccount, premiumAccount };
+  const configured = configuredAccountList();
+  const accounts = [];
+  for (const account of configured) {
+    accounts.push(await upsertConfiguredAccount(account));
+  }
+  return { accounts };
 }
 
 module.exports = {
@@ -219,7 +290,9 @@ module.exports = {
   MIN_PASSWORD_LENGTH,
   PHONE_PATTERN,
   buildPremiumEntries,
+  configuredAccountList,
   ensureConfiguredAccounts,
   ensureConfiguredTestAccount,
-  normalizePhone
+  normalizePhone,
+  parseSharedTestAccounts
 };
